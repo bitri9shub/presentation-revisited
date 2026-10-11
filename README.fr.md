@@ -218,7 +218,7 @@ et c'est là que repose physiquement l'histoire mémoire d'Oracle :
   de redo** d'Oracle.
 
 Ainsi l'échelle se referme : le NAND qui construit la logique est l'ancêtre du bit, le bit est
-l'ancêtre de la DRAM, et la DRAM est là où se trouve physiquement le cache de tampons de la SGA.
+l'ancêtre de la DRAM, et la DRAM est là où se trouve physiquement le buffer cache de la SGA.
 
 **Passage de relais :** avec les portes, nous avons construit le CPU et la mémoire. La Fondation B
 décrit maintenant ces composants du point de vue de l'architecture.
@@ -301,7 +301,7 @@ fonctionnalités matérielles — retenez-les, car elles réapparaissent comme m
   les briques de construction des verrous.
 
 #### B.5 Détails matériels qui décident de la performance d'une base de données
-Ces faits de bas niveau expliquent *pourquoi* les latches, les caches de tampons et les attentes
+Ces faits de bas niveau expliquent *pourquoi* les latches, les buffer caches et les attentes
 `latch`/`mutex` se comportent comme ils le font, et constituent le matériel derrière la
 Fondation C §C.2 :
 
@@ -312,7 +312,7 @@ Fondation C §C.2 :
 - **La cohérence de cache (MESI/MOESI)** garde cohérentes les copies des cœurs : une écriture
   **invalide** les copies des autres cœurs. Donc *les données partagées fortement écrites
   passent moins bien à l'échelle que les données partagées surtout lues* — ce qui explique
-  pourquoi le cache de tampons (surtout lu) et le redo/undo (fortement écrit) d'Oracle ont des
+  pourquoi le buffer cache (surtout lu) et le redo/undo (fortement écrit) d'Oracle ont des
   profils de contention très différents.
 - **Ordonnancement mémoire & barrières** — les CPU réordonnent les chargements/stockages ;
   `mfence`/`lock` et les sémantiques acquire/release rendent les verrous corrects. Le
@@ -471,7 +471,7 @@ Deux principes rendent cela sûr :
 - **ASLR** et les **canaris de pile** expliquent pourquoi les adresses ne sont pas fixes et
   pourquoi les bugs mémoire sont des bugs de sécurité.
 - **Pourquoi c'est important pour la PGA :** « la PGA est un tas de processus » signifie que
-  chaque processus serveur fait des `malloc`/`mmap` pour ses propres zones de travail et sa UGA
+  chaque processus serveur fait des `malloc`/`mmap` pour ses propres work areas et sa UGA
   — ce qui explique exactement pourquoi elle est *privée*, et pourquoi sa taille suit le travail
   par session (tris, hachages), et non l'instance.
 
@@ -538,10 +538,10 @@ apprendrez à partir de l'Étape 0 sont la correspondance ci-dessous.
   sont les appels système réels.
 - La **PGA est le tas privé de chaque processus serveur** — l'espace d'adressage de processus du
   §C.3.
-- La **UGA** est la mémoire de session : dans la **PGA** pour les serveurs dédiés, dans le
+- La **UGA** est la session memory : dans la **PGA** pour les serveurs dédiés, dans le
   **large pool** pour les serveurs partagés — un compromis délibéré d'isolation contre
   consolidation.
-- Le **cache de tampons de la base de données est le cache de pages propre de la base de
+- Le **database buffer cache est le cache de pages propre de la base de
   données** : des blocs de données au lieu de pages de fichiers, avec son propre remplacement
   **LRU + compteur de touches** (§C.3) et ses propres pools **KEEP / RECYCLE**. Oracle utilise
   souvent l'**E/S directe** (`filesystemio_options=SETALL`) pour **contourner le cache de pages
@@ -574,7 +574,7 @@ apprendrez à partir de l'Étape 0 sont la correspondance ci-dessous.
   ordre intention-avant-données qui rend les systèmes de fichiers sûrs après un crash. Un
   `COMMIT` qui retourne signifie que le redo est durable.
 - **DBWn est le démon d'écriture différée** (§C.4) : il vide paresseusement les blocs *modifiés*
-  du cache de tampons ; un **point de contrôle (checkpoint)** avance le point à partir duquel la
+  du buffer cache ; un **point de contrôle (checkpoint)** avance le point à partir duquel la
   récupération doit rejouer. **SMON** effectue la **récupération d'instance** en rejouant le redo
   — journalisation/récupération au niveau base de données.
 - **ASM (Automatic Storage Management)** est un **gestionnaire de volumes + système de fichiers
@@ -596,7 +596,7 @@ apprendrez à partir de l'Étape 0 sont la correspondance ci-dessous.
 | Espace d'adressage privé | PGA (par processus serveur) |
 | Segment de mémoire partagée | SGA (attachée par tous les processus) |
 | Abstraction d'état de session | UGA (dans la PGA ou le large pool) |
-| Cache de pages + LRU | Cache de tampons de la base de données (LRU + compteur de touches, KEEP/RECYCLE) |
+| Cache de pages + LRU | Database buffer cache (LRU + compteur de touches, KEEP/RECYCLE) |
 | Démon d'écriture différée | DBWn ; points de contrôle par CKPT |
 | Journal d'écriture anticipée + `fsync` | Redo log buffer + LGWR ; durabilité du commit ; group commit |
 | Récupération après crash / journal | Récupération d'instance / SMON rejouant le redo |
@@ -651,7 +651,7 @@ Il n'y a que deux questions de suivi qui décident **où** vit un octet :
    de tri, vos valeurs de bind), il va dans la zone **privée** → PGA.
 2. **Calcul ou données ?** Les choses *dérivées* réutilisables (SQL analysé, plans d'exécution,
    métadonnées de tables) vont dans la famille du shared pool. Les *blocs* réels de tables/index
-   vont dans le cache de tampons.
+   vont dans le buffer cache.
 
 C'est tout le jeu. Tout ce qui suit n'est que le détail de ces deux questions.
 
@@ -690,8 +690,8 @@ contrôle lus) ou `OPEN` (fichiers de données utilisables). La mémoire (SGA) e
   +------------------+      | database buffer cache | redo log buffer          |   |  Redo logs   |
            |                | fixed SGA                                        |   |  Fichiers de |
   chaîne   |                + PGA (privée par processus serveur) ---------------+   |   contrôle   |
-  de       +--------------->| zones de travail SQL                             |   |  Paramètres  |
-  connexion|                | mémoire de session (UGA) | zone SQL privée       |   |  & mots de   |
+  de       +--------------->| SQL work areas                             |   |  Paramètres  |
+  connexion|                | session memory (UGA) | private SQL area       |   |  & mots de   |
            |                + MGA (semi-partagée, appartenance dynamique) -----+   |   passe      |
            |                | namespace 1 | namespace 2 | namespace 3 ...      |   +--------------+
            |                +--------------------------------------------------+
@@ -704,7 +704,7 @@ contrôle lus) ou `OPEN` (fichiers de données utilisables). La mémoire (SGA) e
 1. Le **processus serveur** trouve le bloc `EMPLOYEES`. S'il n'est pas dans le **cache de
    tampons**, il le lit depuis un **fichier de données** (une *lecture physique*) et le met en
    cache.
-2. Il modifie la ligne *en RAM* dans le cache de tampons et enregistre la modification plus
+2. Il modifie la ligne *en RAM* dans le buffer cache et enregistre la modification plus
    l'undo dans le **redo log buffer**.
 3. Au `COMMIT`, **LGWR** vide le redo vers les **fichiers de journal de redo** en ligne — c'est
    ce qui rend le commit durable.
@@ -719,7 +719,7 @@ contrôle lus) ou `OPEN` (fichiers de données utilisables). La mémoire (SGA) e
 |---|---|---|
 | Portée | partagée par **tous** les processus ; une par instance | **privée** à un processus serveur |
 | Durée de vie | durée de vie de l'instance | durée de vie de la session/processus |
-| Contient | cache de tampons, shared pool, large pool, java pool, streams pool, vector pool, redo log buffer, fixed SGA | zones de travail SQL, zone SQL privée, mémoire de session (UGA) |
+| Contient | buffer cache, shared pool, large pool, java pool, streams pool, vector pool, redo log buffer, fixed SGA | SQL work areas, private SQL area, session memory (UGA) |
 | Analogie utile | l'armoire de classement du bureau que tout le monde utilise | votre propre tiroir de bureau |
 | Paramètre de dimensionnement | `SGA_TARGET` / `SGA_MAX_SIZE` | `PGA_AGGREGATE_TARGET` / `PGA_AGGREGATE_LIMIT` |
 | Exemple de données | blocs `EMPLOYEES` en cache, le plan analysé de l'UPDATE | le tri en cours de 1 M de lignes, votre réglage `NLS_DATE_FORMAT` |
@@ -733,7 +733,7 @@ ALTER SYSTEM SET pga_aggregate_target = 512M SCOPE = BOTH;
 ```
 
 **L'acronyme que vous verrez à des endroits étranges : UGA.** La *User Global Area* fait
-logiquement partie de la mémoire de session. Avec les serveurs **dédiés**, elle vit physiquement
+logiquement partie de la session memory. Avec les serveurs **dédiés**, elle vit physiquement
 dans la PGA. Avec les serveurs **partagés**, elle vit dans le **large pool** (ou le shared
 pool). Le schéma `oracle_architecture.png` la marque dans la légende et la montre à l'intérieur
 de *Session Memory*. C'est pourquoi le « serveur partagé » change l'endroit où la mémoire d'une
@@ -791,7 +791,7 @@ ALTER SYSTEM SET pga_aggregate_target = 1G SCOPE = BOTH;
 - `SGA_TARGET` = la cible actuelle vers laquelle Oracle va gérer (dynamique). `0` désactive
   l'ASMM.
 - Le processus d'arrière-plan **MMAN** d'Oracle déplace la mémoire entre les composants
-  *auto-réglables* : cache de tampons, shared pool, large pool, java pool, streams pool.
+  *auto-réglables* : buffer cache, shared pool, large pool, java pool, streams pool.
 - **Non auto-réglés :** redo log buffer, fixed SGA, et les pools vector/memoptimize.
 - Si vous fixez explicitement un composant (par ex. `shared_pool_size=400M`), il reste, et seul
   le reste est rééquilibré.
@@ -883,10 +883,10 @@ Il n'y a pas de nombre magique — dimensionnez à partir de la charge et de la 
    sauf si vous utilisez l'E/S directe). Une répartition de départ courante sur un hôte DB dédié
    est **SGA ≈ 50–70 %** de la RAM ; dimensionnez la **PGA** par la concurrence, pas par la RAM.
 2. **`PROCESSES` pilote la PGA.** `pga_aggregate_target ≈ (sessions actives) × (besoin moyen de
-   zone de travail)`. L'OLTP (beaucoup de petits tris/hachages) a besoin de *moins par session*
+   work area)`. L'OLTP (beaucoup de petits tris/hachages) a besoin de *moins par session*
    que le DW (peu de gros).
-3. **OLTP vs DW :** l'OLTP est dominé par le cache de tampons avec une petite PGA et une forte
-   réutilisation d'analyse ; le DW a besoin de grandes zones de travail/PGA, d'un `large_pool`
+3. **OLTP vs DW :** l'OLTP est dominé par le buffer cache avec une petite PGA et une forte
+   réutilisation d'analyse ; le DW a besoin de grandes work areas/PGA, d'un `large_pool`
    pour le parallel query, et bénéficie de l'**In-Memory** en colonnes et des lectures
    direct-path.
 4. **Choisissez un mode :** ASMM (`SGA_TARGET`) pour la plupart des systèmes Linux (fonctionne
@@ -950,7 +950,7 @@ ALTER SESSION SET CONTAINER = FREEPDB1;
   ALTER SYSTEM SET db_cache_size = 2G SCOPE = BOTH SID = 'RAC1';  -- une instance
   ALTER SYSTEM SET db_cache_size = 2G SCOPE = BOTH SID = '*';     -- toutes les instances
   ```
-  Une lecture de bloc sur une instance peut être servie depuis le cache de tampons d'une autre
+  Une lecture de bloc sur une instance peut être servie depuis le buffer cache d'une autre
   instance (global cache / GCS), donc le cache *effectif* est la somme sur toutes les instances.
   Database Free est mono-instance, donc RAC ne s'applique pas aux ateliers ici.
 
@@ -961,16 +961,16 @@ ALTER SESSION SET CONTAINER = FREEPDB1;
 **Un exemple fil rouge.** Gardez une instruction en tête tout au long de cette Étape —
 `UPDATE hr.employees SET salary = 9000 WHERE employee_id = 100`, puis `COMMIT` :
 
-1. Le bloc contenant la ligne 100 est cherché dans le **cache de tampons de la base de données**
+1. Le bloc contenant la ligne 100 est cherché dans le **database buffer cache**
    (§4.2). Un manque est une **lecture physique**, et le bloc atterrit sur une chaîne LRU.
 2. La modification est appliquée au bloc en cache ; un enregistrement **redo** va dans le **redo
    log buffer** (§4.3) et l'**undo** est écrit dans un segment d'undo **également mis en cache**
-   dans le cache de tampons.
+   dans le buffer cache.
 3. `COMMIT` fait que **LGWR** vide le redo vers le disque (durable). **DBWn** écrit le bloc
    modifié plus tard. Rien de tout cela n'a encore eu besoin de la PGA.
 4. Un lecteur concurrent ayant besoin de l'*ancien* salaire construit un **bloc de lecture
    cohérente (CR)** à partir de l'undo — compté comme `consistent gets`.
-5. La modification est maintenant visible par toutes les sessions via le cache de tampons
+5. La modification est maintenant visible par toutes les sessions via le buffer cache
    **partagé**, tandis que l'état privé de chaque session vit dans la **PGA** (§5) et que des
    producteurs/consommateurs coopérants partagent la **MGA** (§6).
 
@@ -980,7 +980,7 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
 - **Quoi / pourquoi :** la comptabilité interne d'Oracle. Contient des pointeurs vers les autres
   composants de la SGA, plus les tableaux d'état processus/session et les pointeurs de tampon de
   redo. Existe dès le démarrage de l'instance.
-- **Exemple de données :** l'adresse de la table de hachage du cache de tampons, l'état du noyau.
+- **Exemple de données :** l'adresse de la table de hachage du buffer cache, l'état du noyau.
 - **Inspecter :**
   ```sql
   SELECT name, ROUND(bytes/1024/1024,1) AS mb FROM v$sgainfo WHERE name = 'Fixed SGA Size';
@@ -989,7 +989,7 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
 - **Manipuler :** *rien directement.* Oracle la dimensionne au démarrage. Elle grandit
   **indirectement** avec des paramètres comme `processes` et `sessions`.
 
-### 4.2 Cache de tampons de la base de données
+### 4.2 Database buffer cache
 - **Quoi / pourquoi :** met en cache les blocs de données pour que les lectures touchent la RAM,
   pas le disque. Les blocs modifiés attendent ici pour DBWn. Généralement le composant **le plus
   grand** de la SGA.
@@ -1053,7 +1053,7 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
     après crash rejoue le redo ; `fast_start_mttr_target` échange de l'E/S de point de contrôle
     régulière contre une récupération plus courte.
   - **Undo & cohérence de lecture :** chaque DML écrit de l'**undo** (dans les segments d'undo,
-    mis en cache dans ce même cache de tampons). Les lecteurs ayant besoin d'une image plus
+    mis en cache dans ce même buffer cache). Les lecteurs ayant besoin d'une image plus
     ancienne construisent un **bloc de lecture cohérente (CR)** en appliquant l'undo — pourquoi
     `consistent gets` est le chemin de lecture normal et `db block gets` des lectures en mode
     courant. Flashback/MVCC reposent tous là-dessus.
@@ -1130,7 +1130,7 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
   - Result cache : `result_cache_mode` (`MANUAL`/`FORCE`) et `result_cache_max_size`, plus
     l'indice `/*+ RESULT_CACHE */`. Purgez avec `DBMS_RESULT_CACHE.FLUSH`.
 - **Attention :** un shared pool trop petit → taux d'analyse dure élevé et attentes de latch
-  `library cache`. Un trop grand gaspille de la RAM que le cache de tampons pourrait utiliser.
+  `library cache`. Un trop grand gaspille de la RAM que le buffer cache pourrait utiliser.
 - **Comment le library cache fonctionne réellement :**
   - **Analyse douce vs dure :** une **analyse douce** trouve un curseur partagé correspondant et
     réutilise son plan ; une **analyse dure** en construit un nouveau (analyse + optimisation +
@@ -1163,7 +1163,7 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
     de requêtes pour qu'un serveur partagé les prenne ; la file de réponses ramène les résultats
     au répartiteur. Soutenues par le large pool.
   - Tampons de messages d'exécution parallèle (pour `SELECT /*+ PARALLEL(4) */`).
-  - **Zone de tampons d'E/S** — tampons utilisés par la sauvegarde/restauration RMAN, DBWn, la
+  - **I/O buffer area** — tampons utilisés par la sauvegarde/restauration RMAN, DBWn, la
     récupération et les processus serveurs d'E/S (voir l'élément de légende plus bas).
 - **Inspecter :**
   ```sql
@@ -1206,7 +1206,7 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
   ```sql
   ALTER SYSTEM SET streams_pool_size = 256M SCOPE = BOTH;
   ```
-  - S'il vaut `0`, Oracle le fait grandir à la demande (en empruntant au cache de tampons) quand
+  - S'il vaut `0`, Oracle le fait grandir à la demande (en empruntant au buffer cache) quand
     un job AQ ou Data Pump en a besoin. Le fixer explicitement garantit un minimum.
 - **Attention :** les utilisateurs de Data Pump sont souvent surpris que le streams pool grandisse
   pendant les exportations/importations.
@@ -1256,15 +1256,15 @@ Une seule instruction touche quatre composants ; le reste de cette Étape expliq
   Les clients peuvent tirer les tampons **directement de la SGA sur le réseau**, évitant la
   surcharge CPU/OS. (L'**ingestion** rapide — `MEMOPTIMIZE FOR WRITE` — est une fonctionnalité
   séparée ; ne supposez pas que ce pool la soutient.)
-- **Deux parties :** la **zone de tampons memoptimize** (≈75 % du pool) verrouille en permanence
+- **Deux parties :** la **memoptimize buffer area** (≈75 % du pool) verrouille en permanence
   les tampons de ces tables jusqu'à `NO MEMOPTIMIZE FOR READ`, et un **index de hachage** (~25 %)
-  mappe les clés primaires vers ces tampons. Ces tampons sont **séparés du cache de tampons de la
+  mappe les clés primaires vers ces tampons. Ces tampons sont **séparés du buffer cache de la
   base de données** et ne **comptent pas** dans sa taille.
 - **Manipuler :** `memoptimize_pool_size` est **statique** (redémarrage) et désactivé par défaut.
   Sa valeur **compte dans `SGA_TARGET`**, mais Oracle ne le fait **pas** grandir/rétrécir
   automatiquement. Pertinent seulement si vous activez des tables memoptimisées.
 
-### 4.10 Autres sous-zones SGA optionnelles
+### 4.10 Other optional SGA subareas
 Les docs les regroupent sous *Optional Performance-Related SGA Subareas* ; ce sont des composants
 SGA tout de même :
 
@@ -1273,14 +1273,14 @@ SGA tout de même :
   par le paramètre **statique** `inmemory_size` ; surveillez avec `V$INMEMORY_AREA`.
 - **Memoptimize Pool** — voir §4.9.
 - **Shared IO Pool** — un pool de tampons d'E/S partagés par l'instance (apparaît dans
-  `V$SGAINFO` comme *Shared IO Pool Size*, et dans la zone de tampons d'E/S du large pool).
+  `V$SGAINFO` comme *Shared IO Pool Size*, et dans la I/O buffer area du large pool).
 
-### 4.11 Légende : mémoire libre et zones de tampons d'E/S
+### 4.11 Légende : free memory et I/O buffer areas
 La légende de `oracle_architecture.png` a deux pastilles qui décrivent un *état*, pas des
 structures séparées :
 
 - **Free memory** — espace inutilisé à l'intérieur d'un pool (par ex. les lignes de `v$sgastat`
-  nommées `free memory`). Oracle peut le distribuer à la demande ; zéro mémoire libre avec des
+  nommées `free memory`). Oracle peut le distribuer à la demande ; zéro free memory avec des
   attentes élevées (`ORA-04031`) signifie que le pool est trop petit.
 - **I/O buffer area** — des tampons qu'un processus emprunte pour mettre en attente des E/S disque
   (écritures DBWn, RMAN, récupération). Cherchez `io buffer` / les entrées d'E/S dans `V$SGASTAT`
@@ -1318,7 +1318,7 @@ non-granules apparaissent comme `RESIZEABLE = No` dans `V$SGAINFO`).
 La PGA est la mémoire **privée** possédée par un processus serveur. Elle a trois parties
 logiques.
 
-### 5.1 Zones de travail SQL
+### 5.1 SQL work areas
 - **Quoi / pourquoi :** mémoire dédiée aux opérateurs gourmands en mémoire — **tris**
   (`ORDER BY`, `GROUP BY`, `DISTINCT`), **jointures par hachage** et **fusions de bitmaps**. Si
   les données tiennent → rapide en mémoire. Sinon, cela déborde sur **temp** et s'exécute en
@@ -1345,7 +1345,7 @@ logiques.
   - **La meilleure correction n'est souvent pas la mémoire :** ajoutez un index, filtrez plus tôt,
     ou évitez les tris inutiles pour avoir moins à trier.
   - **`cache hit percentage` est un diagnostic, pas un objectif.** Une valeur durable proche de
-    100 % signifie que les zones de travail s'exécutent `OPTIMAL` ; une chute en dessous vous dit
+    100 % signifie que les work areas s'exécutent `OPTIMAL` ; une chute en dessous vous dit
     que certaines opérations sont passées one-pass ou multi-pass et ont débordé sur temp. Lisez-le
     avec `V$SQL_WORKAREA_HISTOGRAM` et `V$TEMPSEG_USAGE`, et corrigez l'*opération* (donnez-lui de
     la mémoire **ou** donnez-lui moins de travail) — ne réglez pas le pourcentage lui-même.
@@ -1354,11 +1354,11 @@ logiques.
     WHERE name IN ('cache hit percentage','over allocation count');
     ```
 
-### 5.2 Zone SQL privée
+### 5.2 Private SQL area
 - **Quoi / pourquoi :** la partie par session et par curseur d'une instruction. La partie
   *partagée* (texte SQL + plan) est dans le shared pool ; la partie *privée* est ici :
-  - **Zone persistante** — les valeurs de bind. Libérée quand le curseur se ferme.
-  - **Zone d'exécution** — l'état d'exécution, par ex. la progression d'un full scan.
+  - **Persistent area** — les valeurs de bind. Libérée quand le curseur se ferme.
+  - **Runtime area** — l'état d'exécution, par ex. la progression d'un full scan.
 - **Exemple de données :** `SELECT * FROM employees WHERE dept_id = :d` avec `:d = 10`, 25 des
   100 lignes déjà récupérées.
 - **Inspecter :**
@@ -1376,7 +1376,7 @@ logiques.
     `ORA-01000` (maximum open cursors exceeded). Utilisez des variables de bind et une taille de
     fetch raisonnable.
 
-### 5.3 Mémoire de session (UGA)
+### 5.3 Session memory (UGA)
 - **Quoi / pourquoi :** l'état d'une session — infos de connexion, réglages `ALTER SESSION`,
   variables de package, contextes d'application.
 - **Localisation :** dans la **PGA** pour les serveurs dédiés ; dans le **large pool** (ou le
@@ -1419,7 +1419,7 @@ ORDER BY pm.allocated DESC;
 Les valeurs de `CATEGORY` sont les seaux propres à Oracle (ils existent dans chaque version
 récente) : `SQL`, `PL/SQL`, `Freeable`, `Other` :
 
-- **`SQL`** — les zones de travail SQL (§5.1) plus la zone SQL privée des instructions en cours.
+- **`SQL`** — les SQL work areas (§5.1) plus la private SQL area des instructions en cours.
   Grandit avec les tris/hachages et les grandes jointures par hachage ; surveillez-la pendant un
   mauvais plan.
 - **`PL/SQL`** — l'état d'exécution du PL/SQL : variables de package, collections, `REF CURSOR`s.
@@ -1451,7 +1451,7 @@ nature :
 
 | Zone | Portée | Soutient | Où vous la voyez |
 |---|---|---|---|
-| **PGA** | privée, par processus serveur | zones de travail sort/hash/bitmap, UGA de session, état de curseur | `V$PGASTAT`, `V$PROCESS_MEMORY` |
+| **PGA** | privée, par processus serveur | work areas sort/hash/bitmap, UGA de session, état de curseur | `V$PGASTAT`, `V$PROCESS_MEMORY` |
 | **DGA** (Direct Global Area) | privée, *partie de la PGA* | tampons d'E/S directes (non bufferisées) : tampons de messages du **parallel query**, zones de construction PX hash/bitmap | dans `total PGA used for auto workareas` ; `V$PROCESS_MEMORY_DETAIL` |
 | **MGA** | semi-partagée, sur `/dev/shm` (26ai) | structures AI/vectorielles/analytiques choisies pour le partage dynamique | fichiers sous `/dev/shm` ; voir §6 |
 
@@ -1463,7 +1463,7 @@ nature :
 
 **La limite dure, dans l'ordre.** `PGA_AGGREGATE_TARGET` est souple ; le vrai plafond est
 `PGA_AGGREGATE_LIMIT` (défaut = le plus grand de **2 Go**, **200 % de la cible**, **3 Mo ×
-`PROCESSES`**). Quand la PGA s'en approche, Oracle pousse d'abord les zones de travail en
+`PROCESSES`**). Quand la PGA s'en approche, Oracle pousse d'abord les work areas en
 one-pass/multi-pass ; si elle reste dépassée, il **annule, puis termine les sessions avec le plus
 de PGA non réglable (`Other`)** — une catégorie de `V$PROCESS_MEMORY` à surveiller (§5.4), pas les
 utilisateurs de tri. Détail par processus :
@@ -1636,7 +1636,7 @@ SELECT banner_full FROM v$version;   -- par ex. "Oracle AI Database 26ai Free Re
 | ASMM `SGA_TARGET` / AMM `MEMORY_TARGET` | ✔ | ✔ | ✔ |
 | Multitenant / `FREEPDB1` | ✔ | ✔ | ✔ |
 | Vector pool / `vector_memory_size` (§4.8) | ✘ | ✔ | ✔ |
-| Vues de zones de travail (`V$SQL_WORKAREA*`) | ✔ | ✔ | ✔ |
+| Vues de work areas (`V$SQL_WORKAREA*`) | ✔ | ✔ | ✔ |
 | MGA / `maximum MGA allocated` (§6) | ✘ | partiel | ✔ |
 | Unified Memory `MEMORY_SIZE` (§3.4) | ✘ | ✘ | ✔ |
 | Chemin d'E/S `io_uring` (§E.3) | ✘ | ✘ | à vérifier |
@@ -1719,7 +1719,7 @@ WHERE name IN ('redo size','redo entries','redo buffer allocation retries');
 
 SELECT * FROM v$vector_memory_pool;   -- 23ai
 
--- Reserved pool, mémoire libre et tous les composants réglables
+-- Reserved pool, free memory et tous les composants réglables
 SELECT name, ROUND(bytes/1024/1024,1) AS mb FROM v$sgastat WHERE name = 'free memory';
 SELECT * FROM v$shared_pool_reserved;
 SELECT component, ROUND(current_size/1024/1024) AS mb FROM v$memory_dynamic_components WHERE current_size > 0;
@@ -1926,9 +1926,9 @@ ajouté **5**. L'analyse dure est du CPU dépensé dans le shared pool (§4.4) ;
 en analyse apparaît aussi comme des attentes `library cache`/`row cache` et un brassage du shared
 pool.
 
-**B — Une zone de travail qui déborde sur temp.** Forcez le mode de zone de travail *manuel* avec
+**B — Une work area qui déborde sur temp.** Forcez le mode de work area *manuel* avec
 un `sort_area_size` minuscule, puis lancez un vrai tri. L'histogramme AUTO (§5.1) ne rapporte
-one-pass/multi-pass qu'une fois qu'une zone de travail dépasse la cible auto, donc le mode manuel
+one-pass/multi-pass qu'une fois qu'une work area dépasse la cible auto, donc le mode manuel
 rend le débordement sans ambiguïté via `sorts (disk)` et `V$SQL_WORKAREA`.
 
 ```sql
@@ -1966,10 +1966,10 @@ FROM v$sql_workarea_active;
 ```
 
 Sur une petite instance Free, un tri unique reste généralement `OPTIMAL` (la cible auto permet à
-une zone de travail de grandir) ; one-pass/multi-pass n'apparaissent que quand une zone de travail
+une work area de grandir) ; one-pass/multi-pass n'apparaissent que quand une work area
 est forcée au-delà de la borne auto — donnez-lui plus de PGA ou moins à trier (§5.1).
 
-**C — Lectures à froid vs. à chaud (le cache de tampons).** `ALTER SYSTEM FLUSH BUFFER_CACHE`
+**C — Lectures à froid vs. à chaud (le buffer cache).** `ALTER SYSTEM FLUSH BUFFER_CACHE`
 (instances de test uniquement — §11) expulse les blocs lus. Relisez la même table deux fois et
 surveillez `physical reads` vs `session logical reads` :
 
@@ -1989,7 +1989,7 @@ WHERE n.name IN ('physical reads','session logical reads') ORDER BY n.name;
 
 Observé : après le flush, `physical reads` a bondi de ~2 900 (la table de 100k lignes) ; le second
 passage a ajouté **0** lecture physique et seulement des lectures logiques. Cet écart *est* le
-cache de tampons (§4.2).
+buffer cache (§4.2).
 
 **D — Commits par ligne vs. regroupés (`log file sync`).** Chaque `COMMIT` doit faire vider le
 redo par LGWR, ce qui apparaît comme l'attente `log file sync`. Nuance sur 23ai/26ai : un
@@ -2166,7 +2166,7 @@ la SGA apparaît dans `/proc/sysvipc/shm` (§8.6). Sous AMM/MGA, Oracle utilise 
 | Toute la SGA+PGA (AMM) | `memory_target`, `memory_max_target` | cible ✔ / max statique |
 | SGA+PGA+MGA+UGA (Unified, 26ai) | `memory_size` | ✘ statique (SPFILE) |
 | PGA | `pga_aggregate_target`, `pga_aggregate_limit` | ✔ |
-| Cache de tampons | `db_cache_size`, `db_keep_cache_size`, `db_recycle_cache_size`, `db_nk_cache_size` | ✔ |
+| Buffer cache | `db_cache_size`, `db_keep_cache_size`, `db_recycle_cache_size`, `db_nk_cache_size` | ✔ |
 | Shared pool | `shared_pool_size`, `shared_pool_reserved_size` | pool ✔ / **reserved ✘ statique** |
 | Large pool | `large_pool_size` | ✔ |
 | Java pool | `java_pool_size` | ✔ |
@@ -2186,7 +2186,7 @@ la SGA apparaît dans `/proc/sysvipc/shm` (§8.6). Sous AMM/MGA, Oracle utilise 
 | `V$SGA`, `V$SGAINFO`, `V$SGASTAT` | Totaux SGA et ventilation par pool |
 | `V$SGA_DYNAMIC_COMPONENTS` | Chaque composant auto-réglable + taille de granule |
 | `V$SGA_TARGET_ADVICE` / `V$MEMORY_TARGET_ADVICE` | Bénéfice projeté d'une cible plus grande |
-| `V$BUFFER_POOL`, `V$DB_CACHE_ADVICE`, `V$BH` | Dimensionnement du cache de tampons |
+| `V$BUFFER_POOL`, `V$DB_CACHE_ADVICE`, `V$BH` | Dimensionnement du buffer cache |
 | `V$SHARED_POOL_ADVICE`, `V$LIBRARYCACHE`, `V$SQLAREA` | Shared pool / analyse |
 | `V$RESULT_CACHE_*` | Result cache |
 | `V$SHARED_POOL_RESERVED` | Succès/échecs du reserved pool |
@@ -2225,29 +2225,29 @@ Chaque étiquette de `oracle_architecture.png` et où elle est expliquée dans c
 | Shared Pool | [4.4](#44-shared-pool) |
 | └ Library Cache | [4.4](#44-shared-pool) |
 | └ Shared SQL Area | [4.4](#44-shared-pool) |
-| └ Private SQL Area (Shared Server Only) | [4.4](#44-shared-pool) / [5.2](#52-zone-sql-privée) |
+| └ Private SQL Area (Shared Server Only) | [4.4](#44-shared-pool) / [5.2](#52-private-sql-area) |
 | └ Data Dictionary Cache | [4.4](#44-shared-pool) |
 | └ Server Result Cache | [4.4](#44-shared-pool) |
 | └ Other | [4.4](#44-shared-pool) |
 | └ Reserved Pool | [4.4](#44-shared-pool) |
 | Large Pool | [4.5](#45-large-pool) |
 | └ Response Queue / Request Queue | [4.5](#45-large-pool) |
-| Database Buffer Cache | [4.2](#42-cache-de-tampons-de-la-base-de-données) |
+| Database Buffer Cache | [4.2](#42-database-buffer-cache) |
 | Redo Log Buffer | [4.3](#43-redo-log-buffer) |
 | Fixed SGA | [4.1](#41-fixed-sga) |
 | Java Pool | [4.6](#46-java-pool) |
 | Streams Pool | [4.7](#47-streams-pool) |
 | Vector Pool (23ai) | [4.8](#48-vector-pool-23ai) |
 | PGA | [Étape 5](#étape-5--les-composants-de-la-pga-un-par-un) |
-| └ SQL Work Areas | [5.1](#51-zones-de-travail-sql) |
-| └ Session Memory (UGA) | [5.3](#53-mémoire-de-session-uga) |
-| └ Private SQL Area | [5.2](#52-zone-sql-privée) |
+| └ SQL Work Areas | [5.1](#51-sql-work-areas) |
+| └ Session Memory (UGA) | [5.3](#53-session-memory-uga) |
+| └ Private SQL Area | [5.2](#52-private-sql-area) |
 | MGA (Managed Global Area) | [Étape 6](#étape-6--mga-managed-global-area-et-namespaces) |
 | └ Namespace 1 / 2 / 3 (shared across FG and BG) | [6.2](#62-namespaces) |
 | Server Process / Client Process | [Étape 1](#étape-1--instance-vs-base-de-données-vs-session) |
-| Légende : Free Memory | [4.11](#411-légende--mémoire-libre-et-zones-de-tampons-des) |
-| Légende : I/O Buffer Area | [4.5](#45-large-pool) / [4.11](#411-légende--mémoire-libre-et-zones-de-tampons-des) |
-| Légende : UGA | [5.3](#53-mémoire-de-session-uga) |
+| Légende : Free Memory | [4.11](#411-légende--free-memory-et-io-buffer-areas) |
+| Légende : I/O Buffer Area | [4.5](#45-large-pool) / [4.11](#411-légende--free-memory-et-io-buffer-areas) |
+| Légende : UGA | [5.3](#53-session-memory-uga) |
 | Légende : Client Process | pastille côté client — [Étape 1](#étape-1--instance-vs-base-de-données-vs-session) |
 
 **Notation du schéma.** Dans `oracle_architecture.png` : les **cases ombrées** sont les
@@ -2259,7 +2259,7 @@ dynamique, contrairement à la SGA à l'échelle de l'instance. Voir
 
 Composants bonus présents dans Oracle mais non dessinés dans ce schéma (quand même couverts) :
 In-Memory Area, Memoptimize Pool et granules — voir [4.9](#49-memoptimize-pool-bonus-18c) et
-[4.10](#410-autres-sous-zones-sga-optionnelles).
+[4.10](#410-other-optional-sga-subareas).
 
 ---
 
@@ -2317,17 +2317,17 @@ In-Memory Area, Memoptimize Pool et granules — voir [4.9](#49-memoptimize-pool
 | **ASMM** | Automatic Shared Memory Management — `SGA_TARGET` dimensionne la SGA ; la PGA via `PGA_AGGREGATE_TARGET`. |
 | **AMM** | Automatic Memory Management — `MEMORY_TARGET` déplace la mémoire entre SGA et PGA. Nécessite `/dev/shm`. |
 | **Unified Memory** | `MEMORY_SIZE` 26ai — un seul bouton pour SGA + PGA + MGA + UGA. |
-| **Cache de tampons** | Cache SGA des blocs de données (`db_cache_size`) ; le chemin de lecture. |
-| **Shared pool** | Zone SGA contenant le library cache, le cache de dictionnaire, le result cache, le reserved pool. |
+| **Buffer cache** | Cache SGA des blocs de données (`db_cache_size`) ; le chemin de lecture. |
+| **Shared pool** | Zone SGA contenant le library cache, le data dictionary cache, le result cache, le reserved pool. |
 | **Library cache** | SQL/PLSQL analysés et leurs plans d'exécution (zones SQL partagées). |
-| **Cache de dictionnaire de données** | Lignes en cache du data dictionary pour éviter les requêtes récursives. |
+| **Data dictionary cache** | Lignes en cache du data dictionary pour éviter les requêtes récursives. |
 | **Large pool** | Soutient le serveur partagé, le parallel query, les tampons d'E/S RMAN, les sessions `DBMS_LOB`. |
 | **Redo log buffer** | Tampon SGA des enregistrements de redo ; vidé par LGWR à chaque commit/3 s/quand plein. |
 | **Fixed SGA** | Comptabilité interne créée au démarrage ; grandit avec `processes`/`sessions`. |
 | **In-Memory area** | Column store (`inmemory_size`) pour l'analytique lourde en scans. |
 | **Vector pool** | Zone 23ai+ (`vector_memory_size`) pour les index vectoriels / charges AI. |
 | **Zone de travail** | Mémoire PGA pour un tri, une jointure par hachage ou une fusion de bitmaps. |
-| **Optimal / one-pass / multi-pass** | La zone de travail tient en mémoire / déborde une fois sur TEMP / déborde à répétition. |
+| **Optimal / one-pass / multi-pass** | La work area tient en mémoire / déborde une fois sur TEMP / déborde à répétition. |
 | **Analyse dure / douce** | Un nouveau texte SQL compilé de zéro / un plan existant réutilisé. Les variables de bind rendent les analyses douces. |
 | **LGWR / DBWn / CKPT** | Processus de fond qui écrivent le redo, écrivent les blocs modifiés et signalent les points de contrôle. |
 | **Huge pages** | Pages OS plus grandes (généralement 2 Mo) qui soutiennent la SGA sans grande table de pages ni swap. |
@@ -2348,7 +2348,7 @@ In-Memory Area, Memoptimize Pool et granules — voir [4.9](#49-memoptimize-pool
    **MMU** les traduit en adresses physiques via la table de pages (mise en cache par la TLB). L'OS
    donne à chaque processus son propre espace virtuel.
 3. **Deux problèmes que la mémoire résout pour une base de données.** Éviter de relire/
-   recalculer les données chaudes (cache de tampons, caches) et découpler les producteurs rapides
+   recalculer les données chaudes (buffer cache, caches) et découpler les producteurs rapides
    des écrivains lents (redo log buffer, blocs modifiés).
 
 </details>
@@ -2370,8 +2370,8 @@ In-Memory Area, Memoptimize Pool et granules — voir [4.9](#49-memoptimize-pool
    `CDB$ROOT` (§3.8–3.9).
 7. **L'AMM échoue avec ORA-00845 ?** `MEMORY_TARGET` a besoin de `/dev/shm` ≥ la cible ; Docker met
    `/dev/shm` par défaut à 64 Mo. Augmentez `--shm-size` ou passez en ASMM (`sga_target`).
-8. **Que touche un `UPDATE … COMMIT` ?** Le cache de tampons (trouver/modifier le bloc), le redo
-   log buffer (le vecteur de changement), l'undo (dans le cache de tampons), puis LGWR au commit ;
+8. **Que touche un `UPDATE … COMMIT` ?** Le buffer cache (trouver/modifier le bloc), le redo
+   log buffer (le vecteur de changement), l'undo (dans le buffer cache), puis LGWR au commit ;
    DBWn écrit le bloc modifié plus tard.
 9. **Pourquoi le ratio de succès du cache est-il une mauvaise cible ?** Il *monte* quand vous
    faites moins de travail (par ex. un full scan touche chaque bloc une fois), donc le chercher
@@ -2381,7 +2381,7 @@ In-Memory Area, Memoptimize Pool et granules — voir [4.9](#49-memoptimize-pool
 
 <details><summary><b>Étapes 5–6</b></summary>
 
-10. **Optimal vs. one-pass vs. multi-pass ?** La zone de travail tient toute l'entrée (optimal),
+10. **Optimal vs. one-pass vs. multi-pass ?** La work area tient toute l'entrée (optimal),
     déborde une fois sur TEMP (one-pass), ou relit TEMP à répétition (multi-pass) — chaque étape
     est plus lente et pollue TEMP.
 11. **Où vit la MGA sur Free, et pourquoi est-elle dans les chiffres de PGA ?** Sur des fichiers
@@ -2399,7 +2399,7 @@ In-Memory Area, Memoptimize Pool et granules — voir [4.9](#49-memoptimize-pool
     décidez statique vs dynamique, (3) changez-la (`ALTER SYSTEM`/`SESSION` avec le bon
     `SCOPE`), (4) vérifiez l'effet et surveillez les attentes.
 14. **Après `FLUSH BUFFER_CACHE`, pourquoi la deuxième lecture ajoute-t-elle 0 lecture
-    physique ?** La première lecture a repeuplé le cache de tampons, donc le second passage sert
+    physique ?** La première lecture a repeuplé le buffer cache, donc le second passage sert
     chaque bloc depuis la RAM (seules les lectures logiques grandissent) — §8.7C.
 15. **Pourquoi une boucle de `COMMIT` simple par ligne n'a-t-elle montré qu'un seul `log file
     sync` sur 26ai ?** 23ai/26ai **regroupe** les commits simples émis dans une boucle PL/SQL serrée
