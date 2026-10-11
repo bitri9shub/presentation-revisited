@@ -44,6 +44,11 @@ tune each one** using `ALTER SYSTEM`, `ALTER SESSION`, and `V$` views.
 10. [Diagram coverage checklist](#step-10--diagram-coverage-checklist)
 11. [Security considerations](#step-11--security-considerations)
 
+**Reference**
+- [Glossary](#glossary)
+- [Practice questions (with answers)](#practice-questions-with-answers)
+- [References](#references)
+
 ---
 
 ## Part 0 — Foundations: from a NAND gate to the SGA
@@ -75,8 +80,9 @@ Three layers, each one virtualizing the layer beneath it:
 > 10,000-foot version. The canonical hands-on path is *nand2tetris* (Nisan &
 > Schocken, *The Elements of Computing Systems*); what follows is its spine, and it maps
 > to its projects: **Project 1** = NAND/gates (§A.2), **Project 2** = the ALU (§A.3),
-> **Project 3** = sequential chips & registers (§A.4), **Project 5** = the CPU (§A.5),
-> **Project 6** = the full computer (§A.5).
+> **Project 3** = sequential chips & registers (§A.4), **Project 4** = machine language
+> (the ISA), **Project 5** = the CPU and the full computer (§A.5), **Project 6** = the
+> assembler (§A.6).
 
 The whole machine is built by **layering abstractions** — each level hides the mess
 below it and exposes a clean interface to the level above:
@@ -171,7 +177,25 @@ Combine the blocks and you have the von Neumann parts of Foundation B:
 - **The stored-program idea** (Foundation B): because instructions live in the same
   memory as data, the same fetch/decode/execute hardware runs *any* program.
 
-#### A.6 The physical bit: SRAM, DRAM, flash
+#### A.6 The instruction set (ISA) and assembly
+The CPU and memory above are only useful once hardware and software agree on a
+**vocabulary of instructions** — the **instruction set architecture (ISA)** (nand2tetris
+**Project 4** gives you the machine language; **Project 6** writes an **assembler** that
+turns mnemonics into it):
+
+- An **instruction** encodes an **opcode** (what to do) plus **operands** (registers, an
+  immediate value, or a memory address). Typical classes: arithmetic/logic, load/store,
+  branch/jump, and system calls.
+- **Addressing modes** (immediate, register, direct, indirect, indexed) decide how an
+  operand names its data.
+- The ISA is the **contract**: hardware can be built any way you like as long as it
+  implements the ISA; compilers and assemblers target the ISA, not the transistors.
+- **Assembly** is the human-readable form of that contract (`ADD R1, R2, R3`), and an
+  **assembler** translates it to the binary the CPU fetches. This is the layer Oracle's
+  compiled code ultimately runs on — the same fetch/decode/execute loop, billions of
+  times a second.
+
+#### A.7 The physical bit: SRAM, DRAM, flash
 The "1-bit memory cell" above is realized in silicon in a few ways — and this is where
 Oracle's memory story physically rests:
 
@@ -237,9 +261,10 @@ softened by a **hierarchy of caches** that exploit **locality of reference**
 | NVMe SSD | ~20–100 µs | TB |
 | HDD (random) | ~5–15 ms | TB |
 
-Perspective: RAM is ~1,000× faster than a random SSD read and ~100,000× faster than a
-random HDD read. **That gap is the entire reason databases cache.** (This is the same
-point Step 0 will make for Oracle specifically.)
+Perspective: RAM is a few hundred times faster than a random SSD read (the table's
+~60–100 ns vs. 20–100 µs is roughly **200–1,000×**) and ~100,000× faster than a random HDD
+read. **That gap is the entire reason databases cache.** (This is the same point Step 0 will
+make for Oracle specifically.)
 
 #### B.4 Hardware primitives the operating system depends on
 The OS cannot be built on the CPU alone. It leans on a handful of hardware features —
@@ -457,9 +482,11 @@ the operating system. The pieces you will learn in Step 0 onward are the mapping
   higher-level, blocking lock you can wait on.
 
 #### E.2 Memory
-- The **SGA is a shared memory segment** (System V / POSIX shared memory, or `mmap`)
-  **attached by every Oracle process** — the shared-memory abstraction of §C.3, which is
-  why the SGA is "shared" and the PGA is "private."
+- The **SGA is a shared memory segment**: Oracle obtains it with **`shmget()`** and maps it
+  into each process with **`shmat()`** (System V), or with **`mmap(..., MAP_SHARED, ...)`**
+  (POSIX / `memfd`); every Oracle process **attaches** the same physical pages — the
+  shared-memory abstraction of §C.3, which is why the SGA is "shared" and the PGA is
+  "private." Foundation C said "shared memory"; these are the actual system calls.
 - The **PGA is each server process's private heap** — the process address space of §C.3.
 - The **UGA** is session memory: in the **PGA** for dedicated servers, in the **large
   pool** for shared servers — a deliberate trade of isolation for consolidation.
@@ -471,12 +498,14 @@ the operating system. The pieces you will learn in Step 0 onward are the mapping
   this is why Oracle recommends them on Linux — and why large systems use **ASMM rather
   than AMM**, because AMM (`MEMORY_TARGET`) is **incompatible with HugePages** on Linux.
 - **Swap is a last resort for the SGA/PGA**: paging a data block out to disk turns a
-  ~100 ns access into a ~ms one. But Oracle's install requirements **mandate swap** (for a
-  2–16 GB host, swap ≈ RAM; Free asks for the lesser of 2 GB or 2× RAM), so the right move
-  is to keep a *little* swap and **lower `vm.swappiness`** (e.g. 1–10) so the kernel prefers
-  evicting file cache over database memory. Oracle adds **`PGA_AGGREGATE_LIMIT`** as a
-  database-level guard (analogous to a **cgroup** limit) against the OS **OOM killer**
-  (§C.3, overcommit/thrashing).
+  ~100 ns access into a ~ms one. But Oracle's install requirements **mandate swap**. The
+  Free installation guide states it exactly: *"For Oracle Database Free, Oracle recommends a
+  minimum swap space of 2 GB or twice the size of RAM, whichever is less"*
+  ([26ai Free Requirements](https://docs.oracle.com/en/database/oracle/oracle-database/26/xeinl/requirements.html)).
+  So the right move is to keep a *little* swap and **lower `vm.swappiness`** (e.g. 1–10) so
+  the kernel prefers evicting file cache over database memory. Oracle adds
+  **`PGA_AGGREGATE_LIMIT`** as a database-level guard (analogous to a **cgroup** limit)
+  against the OS **OOM killer** (§C.3, overcommit/thrashing).
 - On multi-socket servers, **NUMA** means some SGA memory is "remote"; Oracle is
   **NUMA-aware** to keep a process near its memory (§C.3).
 - Sizing maps directly: `SGA_TARGET` (shared) vs `PGA_AGGREGATE_TARGET` (private) vs
@@ -493,9 +522,10 @@ the operating system. The pieces you will learn in Step 0 onward are the mapping
   files**, providing striping, mirroring, and rebalancing — the RAID/LVM role of §C.4 at
   the database layer.
 - Oracle uses **asynchronous I/O** and direct I/O so that DBWn/ARCn/RMAN overlap many
-  disk operations while the CPU keeps working (§C.4). On **26ai**, the async batched paths
-  (DBWn flushes, direct-path reads, redo writes) can use Linux **`io_uring`**, with a
-  transparent fallback to **libaio**; synchronous reads stay on `pread64`.
+  disk operations while the CPU keeps working (§C.4). On recent Linux kernels Oracle *may*
+  use **`io_uring`** where available and fall back to **`libaio`**; Oracle has not published
+  a per-path breakdown of which I/O goes through which interface, so **verify against your
+  release's platform guide** rather than assuming which paths use `io_uring`.
 
 #### E.4 The whole mapping on one page
 
@@ -517,7 +547,7 @@ the operating system. The pieces you will learn in Step 0 onward are the mapping
 | Swap / OOM killer | Keep a little swap + low `vm.swappiness`; `PGA_AGGREGATE_LIMIT`; AMM `/dev/shm` |
 | NUMA | NUMA-aware SGA placement and latches |
 | RAID / LVM / FS | ASM (striping, mirroring, rebalance) |
-| Async I/O / `O_DIRECT` | `filesystemio_options=ASYNC/DIRECTIO/SETALL`; 26ai `io_uring` (libaio fallback) |
+| Async I/O / `O_DIRECT` | `filesystemio_options=ASYNC/DIRECTIO/SETALL`; `io_uring` where available, else `libaio` (verify per release) |
 | Daemons | SMON, PMON, CKPT, MMON, MMNL, ARCn |
 | mmap of a file | Datafiles / tempfiles mapped and read in blocks |
 
@@ -539,7 +569,7 @@ Forget Oracle for a second. You have two kinds of storage:
 | Size | huge (TB/PB) | small (GB) |
 | Survives power loss | yes | no |
 
-RAM is roughly **1,000× faster** than a random **NVMe SSD** read and **~100,000×**
+RAM is roughly **200–1,000× faster** than a random **NVMe SSD** read and **~100,000×**
 faster than a random **HDD** read. So every serious database is
 fundamentally a machine that answers one question over and over:
 
@@ -660,9 +690,9 @@ of foreground/background processes. It is covered in [Step 6](#step-6--mga-manag
 **One more area, outside both: software code areas.** The Oracle executable's own
 instructions live in a **software code area** — read-only, usually size-static, and
 preferably installed **shared** so many processes (and instances) map the same pages
-instead of each keeping a copy. Like the setuid protections on system binaries it is kept
-in a more protected location than user programs. It is neither SGA nor PGA, but it is
-real memory the OS must find room for (see §C.5 on the process image).
+instead of each keeping a copy; the code area itself is **read-only and shareable**. It is
+neither SGA nor PGA, but it is real memory the OS must find room for (see §C.5 on the
+process image).
 
 ---
 
@@ -791,11 +821,11 @@ There is no magic number — size from the workload and the box.
 5. **Measure, then adjust** (§7.1): `V$DB_CACHE_ADVICE`, `V$SGA_TARGET_ADVICE`,
    `V$PGA_TARGET_ADVICE`, `V$SHARED_POOL_ADVICE`. Change one thing, watch the waits.
 
-**Worked example — Oracle Database 23ai Free (2 GB cap):**
+**Worked example — Oracle Database Free (2 GB cap):**
 
 | Component | Target | Rationale |
 |---|---|---|
-| SGA total | ~1.1–1.5 GB | leave headroom for PGA + OS |
+| SGA total | ~1.1 GB | leave headroom for PGA + OS |
 | `SGA_TARGET` | `1100M` | ASMM manages buffer cache/shared/… pools |
 | `DB_CACHE_SIZE` (auto slice) | most of the SGA | OLTP read path |
 | `PGA_AGGREGATE_TARGET` | `512M` | modest concurrency on 2 cores |
@@ -804,11 +834,50 @@ There is no magic number — size from the workload and the box.
 | large pool | only if shared server/parallel | otherwise leave `0` |
 
 ```sql
+-- SGA_TARGET / PGA_AGGREGATE_TARGET are INSTANCE-wide: set them in the root.
+ALTER SESSION SET CONTAINER = CDB$ROOT;
+ALTER SYSTEM SET sga_target            = 1100M SCOPE = BOTH;   -- instance SGA
+ALTER SYSTEM SET pga_aggregate_target  = 512M  SCOPE = BOTH;   -- instance PGA
 ALTER SESSION SET CONTAINER = FREEPDB1;
-ALTER SYSTEM SET sga_target = 1100M SCOPE = BOTH;
-ALTER SYSTEM SET pga_aggregate_target = 512M SCOPE = BOTH;
 -- total ≈ 1.6 GB, safely under the 2 GB Free ceiling
 ```
+
+> **Root vs. PDB (important).** `SGA_TARGET` and `PGA_AGGREGATE_TARGET` set in `CDB$ROOT`
+> are the **instance totals**. The same-named parameters set while connected to a PDB are
+> **per-PDB caps** — they bound how much of the instance SGA/PGA *that* PDB may consume and
+> **do not resize the instance**. To guarantee a PDB a floor, use `SGA_MIN_SIZE`. The CDB's
+> default PDB is `FREEPDB1`; verify where you are with
+> `SELECT SYS_CONTEXT('USERENV','CON_NAME') FROM dual;`.
+
+### 3.9 Where those parameters live: CDB, PDB, Resource Manager, RAC
+
+- **One instance = one SGA/PGA.** In a multitenant database (23ai Free is a CDB) there is still
+  a *single* instance SGA and PGA shared by every PDB. Set `SGA_TARGET` /
+  `PGA_AGGREGATE_TARGET` while connected to **`CDB$ROOT`**; that is the instance total.
+- **Per-PDB caps.** The same-named parameters set *inside* a PDB bound only that PDB's slice and
+  never resize the instance: `SGA_TARGET` (cap), `SGA_MIN_SIZE` (floor),
+  `PGA_AGGREGATE_TARGET`, `PGA_AGGREGATE_LIMIT`, `DB_CACHE_SIZE`. This is how you stop one PDB
+  from starving another:
+  ```sql
+  ALTER SESSION SET CONTAINER = FREEPDB1;
+  ALTER SYSTEM SET sga_target           = 1200M SCOPE = BOTH;  -- cap for this PDB only
+  ALTER SYSTEM SET sga_min_size         = 256M  SCOPE = BOTH;  -- guaranteed floor
+  ALTER SYSTEM SET pga_aggregate_limit  = 1G    SCOPE = BOTH;  -- hard cap for this PDB
+  ```
+- **Resource Manager.** `DBMS_RESOURCE_MANAGER` plans distribute CPU, I/O, parallel servers,
+  sessions and undo across consumer groups and PDBs; memory itself is bounded by the per-PDB
+  parameters above rather than by a "memory share". Monitor per-PDB memory with
+  `V$RSRCPDBMETRIC` (26ai) and per-group activity with `V$RSRC_CONSUMER_GROUP`.
+- **RAC.** In a Real Application Clusters database **each instance has its own SGA and PGA**.
+  Most memory settings are database-wide, but many can be scoped to one instance (or all) with
+  the `SID` clause:
+  ```sql
+  ALTER SYSTEM SET db_cache_size = 2G SCOPE = BOTH SID = 'RAC1';  -- one instance
+  ALTER SYSTEM SET db_cache_size = 2G SCOPE = BOTH SID = '*';     -- all instances
+  ```
+  A block read on one instance can be served from another instance's buffer cache (global
+  cache / GCS), so the *effective* cache is the sum across instances. Database Free is
+  single-instance, so RAC does not apply to the labs here.
 
 ---
 
@@ -887,8 +956,14 @@ One statement touches four components; the rest of this Step explains each.
     latch protects that bucket. Hot blocks → `latch: cache buffers chains` contention.
   - **LRU with a touch count:** the list has a **hot** end and a **cold** end. A block's
     touch count increments only if it was last incremented more than **3 seconds** ago (so
-    a burst of pins counts once); a hot block stays, a cold one ages out. Full table scans
-    insert blocks toward the **middle** of the list so they don't flush the hot set.
+    a burst of pins counts once); a hot block stays, a cold one ages out. A **long full
+    table scan** places its blocks at the **cold (tail) end**, so they age out quickly
+    instead of flushing the hot set; a **short** scan of a table below the small-table
+    threshold goes to the **hot (MRU) end**; and a **very large** scan may bypass the cache
+    entirely with **direct-path reads** (11g+). See the
+    [26ai Tuning Guide — Tuning the Database Buffer Cache](https://docs.oracle.com/en/database/oracle/oracle-database/26/tgdba/tuning-database-buffer-cache.html)
+    ("Database blocks accessed during a long full table scan are placed on the tail end of
+    the Least Recently Used (LRU) list").
   - **Buffer states:** each buffer is **Unused**, **Clean** (read-consistent, reusable), or
     **Dirty** (modified; must be written before reuse), and is either **pinned** (in use)
     or **free**.
@@ -1066,10 +1141,17 @@ One statement touches four components; the rest of this Step explains each.
   SHOW PARAMETER vector_memory_size
   SELECT * FROM v$vector_memory_pool;
   ```
-- **Manipulate:**
+- **Manipulate** (the parameter is **static and instance-wide**, so set it in the root):
   ```sql
+  -- vector_memory_size is static and CDB-wide: run in the root, then restart
+  ALTER SESSION SET CONTAINER = CDB$ROOT;
   ALTER SYSTEM SET vector_memory_size = 512M SCOPE = SPFILE;   -- STATIC: restart required
-  CREATE VECTOR INDEX h_iv ON hr.docs (embedding)
+  -- after restart, a self-contained runnable example in the PDB:
+  ALTER SESSION SET CONTAINER = FREEPDB1;
+  CREATE TABLE hr.docs (id NUMBER, embedding VECTOR(3, FLOAT32));
+  INSERT INTO hr.docs VALUES (1, '[1, 2, 3]');
+  COMMIT;
+  CREATE VECTOR INDEX hr_docs_hnsw ON hr.docs (embedding)
     ORGANIZATION INMEMORY NEIGHBOR GRAPH
     DISTANCE COSINE WITH TARGET ACCURACY 90;
   ```
@@ -1124,11 +1206,16 @@ SGA memory is allocated in **granules**, so sizes round to the nearest granule:
 | 64–128 GB | 256 MB |
 | > 128 GB | 512 MB |
 
-> The **redo log buffer** and the **fixed SGA** are the exceptions: neither is allocated
-> in granules (the redo buffer is one contiguous `LOG_BUFFER`, the fixed SGA is internal
-> bookkeeping). Everything else in the SGA rounds to the granule size.
+> The **redo log buffer** and the **fixed SGA** are the exceptions: neither divides memory
+> into granules (the redo buffer is one contiguous `LOG_BUFFER`, the fixed SGA is internal
+> bookkeeping). Everything else in the SGA rounds to the granule size. Oracle's own wording:
+> *"All SGA components except the redo log buffer allocate and deallocate space in units of
+> contiguous memory called granules"* and *"the redo log buffer and fixed SGA buffer do not
+> divide memory into granules"* — see
+> [26ai Concepts, Memory Architecture](https://docs.oracle.com/en/database/oracle/oracle-database/26/cncpt/memory-architecture.html).
 
-See the exact value per component in `V$SGA_DYNAMIC_COMPONENTS.GRANULE_SIZE`.
+See the exact value per component in `V$SGA_DYNAMIC_COMPONENTS.GRANULE_SIZE` (the non-granule
+items show as `RESIZEABLE = No` in `V$SGAINFO`).
 
 ---
 
@@ -1148,7 +1235,8 @@ The PGA is **private** memory owned by a server process. It has three logical pa
          number_passes, tempseg_size
   FROM v$sql_workarea_active;
   -- histograms show how many operations are optimal/one-pass/multi-pass
-  SELECT optimal_count, onepass_count, multipass_count FROM v$sql_workarea_histogram;
+  SELECT optimal_executions, onepass_executions, multipasses_executions
+  FROM v$sql_workarea_histogram;
   ```
 - **Manipulate:**
   ```sql
@@ -1160,8 +1248,16 @@ The PGA is **private** memory owned by a server process. It has three logical pa
   ALTER SESSION SET hash_area_size = 100M;
   ```
   - **Best fix is often not memory:** add an index, filter earlier, or avoid
-    unnecessary sorts so there is less to sort. Then check
-    `SELECT name, value FROM v$pgastat WHERE name='cache hit percentage';` (want ~100%).
+    unnecessary sorts so there is less to sort.
+  - **`cache hit percentage` is a diagnostic, not a target.** A sustained value near 100%
+    means work areas are running `OPTIMAL`; a drop below it tells you some operations went
+    one-pass or multi-pass and spilled to temp. Read it with `V$SQL_WORKAREA_HISTOGRAM` and
+    `V$TEMPSEG_USAGE`, and fix the *operation* (give it memory **or** give it less work) —
+    do not tune the percentage itself.
+    ```sql
+    SELECT name, value FROM v$pgastat
+    WHERE name IN ('cache hit percentage','over allocation count');
+    ```
 
 ### 5.2 Private SQL area
 - **What / why:** the per-session, per-cursor part of a statement. The *shared* part
@@ -1224,6 +1320,20 @@ FROM   v$process_memory pm JOIN v$process p ON p.pid = pm.pid
 ORDER BY pm.allocated DESC;
 ```
 
+The `CATEGORY` values are Oracle's own buckets (they exist in every recent release):
+`SQL`, `PL/SQL`, `Freeable`, `Other`:
+
+- **`SQL`** — SQL work areas (§5.1) plus the private SQL area of executing statements.
+  Grows with sorts/hashes and large hash joins; watch it during a bad plan.
+- **`PL/SQL`** — PL/SQL runtime state: package variables, collections, `REF CURSOR`s. This
+  is where a `BULK COLLECT ... LIMIT` that is set too high (or a runaway nested-table
+  collection) blows up a single session's PGA. Cap it with `LIMIT` and bulk binds.
+- **`Freeable`** — memory Oracle has allocated but can release back to the OS (typically
+  freed work areas not yet returned). Temporary spikes here are normal.
+- **`Other`** — session/UGA overhead, logon state and **untunable** allocations. When
+  `PGA_AGGREGATE_LIMIT` is hit, Oracle aborts/terminates the sessions with the most
+  **untunable** (`Other`) PGA first — so a growing `Other` is the dangerous one.
+
 ```sql
 ALTER SYSTEM SET pga_aggregate_target = 1G SCOPE = BOTH;   -- soft target
 ALTER SYSTEM SET pga_aggregate_limit  = 4G SCOPE = BOTH;   -- hard ceiling
@@ -1236,6 +1346,38 @@ ALTER SYSTEM SET pga_aggregate_limit  = 4G SCOPE = BOTH;   -- hard ceiling
   exceeded, Oracle aborts, then terminates, the sessions using the most *untunable* PGA.
 - **`over allocation count` rising** = `PGA_AGGREGATE_TARGET` is too small to even
   run your workload's minimum — raise it (or reduce concurrency).
+
+### 5.5 PGA vs. DGA vs. MGA — and what the hard limit does
+
+Three areas are easy to conflate. They overlap in accounting but not in nature:
+
+| Area | Scope | Backs | Where you see it |
+|---|---|---|---|
+| **PGA** | private, per server process | sort/hash/bitmap work areas, session UGA, cursor state | `V$PGASTAT`, `V$PROCESS_MEMORY` |
+| **DGA** (Direct Global Area) | private, *part of the PGA* | direct (non-buffered) I/O buffers: **parallel query** message buffers, PX hash/bitmap build areas | inside `total PGA used for auto workareas`; `V$PROCESS_MEMORY_DETAIL` |
+| **MGA** | semi-shared, on `/dev/shm` (26ai) | AI/vector/analytical structures chosen for dynamic sharing | files under `/dev/shm`; see §6 |
+
+- DGA is **not** separately tunable; it grows with parallel execution. Kill the runaway PX query
+  and lower `PARALLEL_*` for that object.
+- MGA is **counted under PGA allocation** (§6.3) even though its pages live on tmpfs — so it
+  appears in `V$PGASTAT` PGA totals even though it is not anonymous process memory.
+
+**The hard limit, in order.** `PGA_AGGREGATE_TARGET` is soft; the real ceiling is
+`PGA_AGGREGATE_LIMIT` (default = greatest(**2 GB**, **200% of target**, **3 MB × `PROCESSES`**)).
+As PGA approaches it, Oracle first pushes work areas to one-pass/multi-pass; if it is still
+exceeded it **aborts, then terminates the sessions with the most untunable (`Other`) PGA** — a
+`V$PROCESS_MEMORY` category worth watching (§5.4), not the sort users. Per-process detail:
+
+```sql
+SELECT p.spid, p.program, pmd.category, pmd.name, pmd.heap_name,
+       ROUND(pmd.bytes/1024/1024,1) mb, pmd.allocation_count
+FROM   v$process_memory_detail pmd JOIN v$process p ON p.pid = pmd.pid
+ORDER BY pmd.bytes DESC FETCH FIRST 20 ROWS ONLY;
+```
+
+Set the limit only **at or above** the default (a lower value is rejected); to relieve pressure,
+raise it, cap the offending PDB (`ALTER SYSTEM SET pga_aggregate_limit` inside the PDB), or fix
+the SQL/session (bounded `BULK COLLECT`, lower DOP, avoid pathological hashes).
 
 ---
 
@@ -1271,7 +1413,8 @@ subdivided into **Namespace 1, Namespace 2, Namespace 3**, with the note:
 - **Sizing:** there is no dedicated `mga_size` parameter. The MGA is sized by the
   memory-management mode — under **Unified Memory** (`MEMORY_SIZE`, 26ai) it is one
   of the segments Oracle balances automatically; otherwise it is derived internally.
-  Note that **all MGA is accounted under `PGA_AGGREGATE_LIMIT`**.
+  MGA is reported under the PGA umbrella (`V$PGASTAT` has `MGA allocated (under PGA)` and
+  `maximum MGA allocated`), so treat it as part of what `PGA_AGGREGATE_LIMIT` guards.
 - **Inspect:** MGA/DGA figures show up in `V$PGASTAT` on newer releases:
   ```sql
   SELECT name, ROUND(value/1024/1024) AS mb
@@ -1287,9 +1430,15 @@ subdivided into **Namespace 1, Namespace 2, Namespace 3**, with the note:
   and (b) the features that use it (parallelism, vector indexes, AI inference).
 - **Watch out:** MGA support and its exact monitoring views differ by release — always
   confirm against your version before relying on a statistic.
-- **MGA and `/dev/shm`:** the MGA/PGA shared pieces live on **tmpfs (`/dev/shm`)**, so its
-  size must be at least `PGA_AGGREGATE_LIMIT` (and large enough for AMM/Unified Memory);
-  if tmpfs is too small, allocation fails. Check with `df -h /dev/shm` (§8.6).
+- **MGA and `/dev/shm`:** MGA's named namespaces are backed by files on **tmpfs
+  (`/dev/shm`)** — a live 26ai Free container shows `KSTRCB_MGA_NMSPC_0_0.dat` and
+  `KSTRCB_MGA_NMSPC_1_0.dat`, 16 MB each (32 MB total). Two separate sizing facts:
+  - **AMM / Unified Memory** need `/dev/shm` to be at least the greater of
+    `MEMORY_MAX_TARGET` / `MEMORY_TARGET` (or `MEMORY_SIZE`); that is the classic
+    `ORA-00845` constraint. It is **not** sized to `PGA_AGGREGATE_LIMIT`.
+  - The **MGA itself** needs enough tmpfs for its namespaces. In the Docker Free image
+    `/dev/shm` was only 64 MB while MGA used 32 MB and the instance was healthy.
+  Check with `df -h /dev/shm` (§8.6).
 
 ---
 
@@ -1346,10 +1495,15 @@ and **12 GB of user data**. So keep `SGA_TARGET + PGA_AGGREGATE_TARGET ≤ ~2 GB
 values are silently capped. Give Docker a little headroom:
 
 ```bash
-# Read the password from the terminal so it is NOT in shell history or `docker inspect`
+# `read -rs` keeps the password out of your *shell history* — nothing more. Passing it
+# to the container with `-e ORACLE_PWD` still stores the value in the container's Env,
+# which `docker inspect` displays. For a stronger option use an env-file or a Docker
+# secret (see §11.1).
 read -rs -p "Choose SYS/SYSTEM password: " ORACLE_PWD; echo; export ORACLE_PWD
 
-# Bind the listener to localhost only, and persist data across container recreation
+# Bind the listener to localhost only, and persist data across container recreation.
+# `--memory=3g` leaves the host room for the ~2 GB instance + OS; it is a Docker cgroup
+# cap, NOT the Free 2 GB limit (see §8.8).
 docker run -d --name oradb \
   --memory=3g \
   -p 127.0.0.1:1521:1521 \
@@ -1361,19 +1515,47 @@ docker logs -f oradb          # wait for "DATABASE IS READY TO USE!" then Ctrl-C
 docker exec -it oradb sqlplus / as sysdba
 ```
 
-Install **HR** — it does **not** ship with 21c+ (Docker Free included). Use the Oracle
-sample-schema repo:
+**First lab step — know your release.** `free:latest` is a moving tag; at the time of
+writing it reports **Oracle AI Database 26ai Free** (`23.x` version string), but it can
+change. Run this first, because later steps use features older releases lack:
+
+```sql
+SELECT banner_full FROM v$version;   -- e.g. "Oracle AI Database 26ai Free Release 23.26.3.0.0"
+```
+
+| Feature used in this guide | 19c | 23ai | 26ai |
+|---|---|---|---|
+| ASMM `SGA_TARGET` / AMM `MEMORY_TARGET` | ✔ | ✔ | ✔ |
+| Multitenant / `FREEPDB1` | ✔ | ✔ | ✔ |
+| Vector pool / `vector_memory_size` (§4.8) | ✘ | ✔ | ✔ |
+| Work-area views (`V$SQL_WORKAREA*`) | ✔ | ✔ | ✔ |
+| MGA / `maximum MGA allocated` (§6) | ✘ | partial | ✔ |
+| Unified Memory `MEMORY_SIZE` (§3.4) | ✘ | ✘ | ✔ |
+| `io_uring` I/O path (§E.3) | ✘ | ✘ | verify |
+
+Install **HR** — it does **not** ship with 21c+ (Docker Free included). The GitHub release
+page has **no zip asset**, so fetch the source archive (`curl` and `unzip` are present in
+the Oracle Free image):
 
 ```bash
 docker exec -it oradb bash
 cd /home/oracle
-# Prefer the versioned asset; if unsure, clone the repo instead
-curl -L -o db-sample-schemas.zip \
-  https://github.com/oracle-samples/db-sample-schemas/releases/latest/download/db-sample-schemas.zip
-unzip -q db-sample-schemas.zip && cd db-sample-schemas*/human_resources
-sqlplus sys/$ORACLE_PWD@localhost/FREEPDB1 as sysdba @hr_install.sql
-#   prompts: HR password, default tablespace (USERS), log directory (accept default)
+# Source archive for the current release (the releases page ships no binary asset):
+curl -L -o dss.zip \
+  https://github.com/oracle-samples/db-sample-schemas/archive/refs/tags/v23.3.zip
+unzip -q dss.zip && cd db-sample-schemas-*/human_resources
+
+# OS authentication needs no password and keeps one off the command line.
+sqlplus / as sysdba
+SQL> ALTER SESSION SET CONTAINER = FREEPDB1;
+SQL> @hr_install.sql
+#   prompts: HR password, tablespace (accept USERS), overwrite if it already exists
 ```
+
+> Inside the container `$ORACLE_PWD` is **not** exported for you (the Official image
+> consumes it at startup; the community `gvenzl` image uses `ORACLE_PASSWORD`). Prefer
+> `sqlplus / as sysdba` (OS auth) or `sqlplus /nolog` + `CONNECT`; avoid
+> `sqlplus sys/$ORACLE_PWD@...`, which puts the password on the command line (§11.1).
 
 ```sql
 SET LINESIZE 200 PAGESIZE 100
@@ -1382,13 +1564,15 @@ SELECT COUNT(*) FROM hr.employees;            -- expect 107
 ```
 
 > **Static / system parameters are CDB-wide.** `log_buffer`, `sga_max_size`,
-> `memory_max_target`, `vector_memory_size`, and `memoptimize_pool_size` live in the
-> **root**. Run those `ALTER SYSTEM` statements *before* switching to the PDB:
+> `memory_max_target`, `memory_size`, `vector_memory_size`, and `memoptimize_pool_size` live
+> in the **root**. Run those `ALTER SYSTEM` statements *before* switching to the PDB:
 > ```sql
 > ALTER SESSION SET CONTAINER = CDB$ROOT;
 > -- ALTER SYSTEM SET log_buffer = 32M SCOPE = SPFILE;
 > ALTER SESSION SET CONTAINER = FREEPDB1;
 > ```
+> `SGA_TARGET` and `PGA_AGGREGATE_TARGET` are **instance-wide** too — set them in the root
+> (§3.8), not the PDB.
 
 ### 8.1 Orientation
 
@@ -1466,11 +1650,18 @@ WHERE sid = SYS_CONTEXT('USERENV','SID');
 ### 8.5 Practice changing things (DBA)
 
 ```sql
--- Per-container knobs. On Oracle Free keep the SUM within ~2 GB.
+-- SGA_TARGET / PGA_AGGREGATE_TARGET are INSTANCE-wide: run them in the root. On Free
+-- keep the SUM within ~2 GB.
+ALTER SESSION SET CONTAINER = CDB$ROOT;
+ALTER SYSTEM SET sga_target           = 1100M SCOPE = BOTH;   -- instance SGA (matches §3.8)
+ALTER SYSTEM SET pga_aggregate_target = 512M  SCOPE = BOTH;   -- instance PGA
+SHOW PARAMETER sga_target;
+
+-- Per-PDB knobs (bounded by the CDB): a PDB-level SGA_TARGET is a per-PDB cap, and
+-- SGA_MIN_SIZE is that PDB's guaranteed floor. Set these while in the PDB.
 ALTER SESSION SET CONTAINER = FREEPDB1;
-ALTER SYSTEM SET sga_target = 1200M SCOPE = BOTH;
-ALTER SYSTEM SET pga_aggregate_target = 512M SCOPE = BOTH;
-ALTER SYSTEM SET open_cursors = 500 SCOPE = BOTH;
+ALTER SYSTEM SET sga_min_size  = 256M SCOPE = BOTH;
+ALTER SYSTEM SET open_cursors  = 500  SCOPE = BOTH;
 
 -- PGA_AGGREGATE_LIMIT: do NOT set it below the default or it is rejected.
 -- Default = greatest(2 GB, 200% of PGA_AGGREGATE_TARGET, 3 MB x PROCESSES).
@@ -1497,50 +1688,354 @@ FROM v$shared_pool_advice WHERE shared_pool_size_factor = 1;
 ### 8.6 The OS-level bridge: prove SGA is shared and PGA is private
 
 Part 0 asserts that the SGA is a **shared segment** and the PGA is a **process's private
-heap**. Here is the experiment that *shows* it (adapt if a tool is missing from the image):
+heap**. This experiment shows it. Many images omit `ipcs`, `pgrep`, `ps` and even `free`;
+the fallbacks below use SQL and `/proc` so they work anywhere.
+
+**1. The shared segment (the SGA).** With `ipcs` often missing, read the kernel's
+System V shared-memory table `/proc/sysvipc/shm` directly:
 
 ```bash
-# Shared segments: the SGA appears as one big segment; nattch = attached processes
-docker exec oradb bash -c '
-  ipcs -m
-  PID=$(pgrep -f ora_pmon | head -1)
-  grep -E "SYSV|/dev/shm|/dev/hugepages" /proc/$PID/maps | head
-  grep -E "VmRSS|RssShmem|RssAnon|VmSwap" /proc/$PID/status'
+docker exec oradb bash -lc '
+  echo "== SYSV shared segments (SGA) =="
+  cat /proc/sysvipc/shm 2>/dev/null || ipcs -m
+  echo "== tmpfs (AMM/MGA) =="
+  ls -l /dev/shm; df -h /dev/shm'
 ```
 
-- `ipcs -m` → the SGA as one **shared memory segment** (`nattch` = number of Oracle
-  processes mapped to it).
-- `/proc/<pid>/maps` → that same segment mapped into **every** Oracle process.
-- `/proc/<pid>/status` → **`RssShmem`** ≈ the process's share of the **SGA**;
-  **`RssAnon`** ≈ its **PGA** (private); **`VmSwap`** should stay ≈ 0.
+- One large segment (~1.5 GB in the Free image) with `nattch` in the dozens is the **SGA**;
+  `nattch` counts how many Oracle processes have attached it.
+- Under **AMM**, `ipcs -m` / `/proc/sysvipc/shm` can show little or nothing because AMM uses
+  **files under `/dev/shm`** instead — so an *empty* SYSV list means AMM, not "no SGA".
 
-Match Oracle's view to the same OS pid:
+**2. The private side (the PGA).** Don't probe **PMON**: it is a background process, so
+comparing its `/proc` counters against *your session's* `V$PROCESS` row compares two
+different processes. Create a stable foreground session, find its OS pid, and read *that*
+process (the following is tested on Oracle AI Database 26ai Free):
 
-```sql
-SELECT p.spid AS os_pid, p.program,
-       ROUND(p.pga_used_mem/1024/1024,1)  AS pga_used_mb,
-       ROUND(p.pga_alloc_mem/1024/1024,1) AS pga_alloc_mb
-FROM   v$process p JOIN v$session s ON s.paddr = p.addr
-WHERE  s.sid = SYS_CONTEXT('USERENV','SID');
+```bash
+docker exec -i oradb bash -s <<'OUTER'
+# a throwaway session that just sleeps
+sqlplus -s / as sysdba <<'EOS' >/dev/null 2>&1 &
+exec dbms_session.sleep(60);
+EOS
+sleep 4
+
+SPID=$(sqlplus -s / as sysdba <<'EOS' | tr -d '[:space:]'
+SET HEAD OFF FEED OFF PAGES 0
+SELECT p.spid FROM v$session s JOIN v$process p ON p.addr = s.paddr
+WHERE s.type = 'USER' AND s.event LIKE '%timer%' FETCH FIRST 1 ROW ONLY;
+EOS
+)
+echo "server pid: $SPID"
+
+echo "== OS view of that process =="
+grep -E 'VmRSS|RssAnon|RssShmem|VmSwap' /proc/$SPID/status
+
+echo "== Oracle view of the same process =="
+sqlplus -s / as sysdba <<EOS
+SET LINESIZE 200
+COL spid FOR A8
+SELECT spid, ROUND(pga_used_mem/1024/1024,1) pga_used_mb,
+       ROUND(pga_alloc_mem/1024/1024,1) pga_alloc_mb
+FROM v\$process WHERE spid = '$SPID';
+EOS
+OUTER
 ```
 
-Compare `RssAnon` (OS, private ≈ PGA) with `pga_alloc_mem` (Oracle). Then inspect the
-kernel knobs that govern all of this:
+- **`RssAnon` ≈ `pga_alloc_mb`**: both describe the same process's private, anonymous
+  memory. They won't match exactly — `RssAnon` also counts the binary's stack and data — but
+  they should be the same order of magnitude.
+- **`RssShmem` is *not* "the process's share of the SGA."** It is only the **touched** part
+  of every shared mapping the process holds at that instant, so it is usually far smaller
+  than `SGA / nattch` and varies with what the process has accessed.
+- **`VmSwap`** should stay ≈ 0.
+
+**3. Kernel knobs.**
 
 ```bash
 # Host-side view of RAM, swap, and huge pages
 grep -E "MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree|Huge" /proc/meminfo
 sysctl vm.swappiness vm.nr_hugepages vm.overcommit_memory 2>/dev/null
-docker exec oradb bash -c 'ulimit -l'      # memlock limit (needed for huge pages)
+docker exec oradb bash -c 'ulimit -l'      # memlock limit (needed for huge pages, §8.9)
 ```
 
 What you just proved:
-- **SGA = one shared segment** attached by N processes (`ipcs -m`, `RssShmem`).
+- **SGA = one shared segment** attached by N processes (`/proc/sysvipc/shm`).
 - **PGA = private anonymous memory** per process (`RssAnon` ≈ `pga_alloc_mem`).
-- **AMM** shows up as files under `/dev/shm`; **ASMM + huge pages** shows mappings
-  backed by huge pages with a small `/dev/shm` — the incompatibility from §3.3 made real.
-- **`vm.swappiness`** should be low and **`memlock`** high (for huge pages); `nr_hugepages ×
-  Hugepagesize` should cover the SGA.
+- **AMM** shows up as files under `/dev/shm`; **ASMM + huge pages** shows huge-page
+  mappings with a small `/dev/shm` — the incompatibility from §3.3 made real.
+- **`vm.swappiness`** should be low; **`memlock`** high enough for huge pages, with
+  `nr_hugepages × Hugepagesize` covering the SGA.
+
+### 8.7 Four experiments that make the model concrete
+
+All four were run on Oracle AI Database 26ai Free in the §8.0 container. Magnitudes vary by
+box; the *direction* is what matters. Snapshot the counter before and after each step.
+
+**A — Soft vs. hard parse (why bind variables matter).** Create scratch data, then run the
+same lookup twice: once with the literal concatenated into the SQL text, once with a bind
+variable. `parse count (total)` / `(hard)` come from `V$MYSTAT`.
+
+```sql
+ALTER SESSION SET CONTAINER = FREEPDB1;
+DROP TABLE t_parse PURGE;
+CREATE TABLE t_parse (id NUMBER, pad VARCHAR2(200));   -- 100k rows ≈ 20 MB, used again in B and C
+INSERT INTO t_parse SELECT level, RPAD('x',200,'y') FROM dual CONNECT BY level <= 100000;
+COMMIT;
+```
+
+```sql
+COL name FOR A22
+-- 1) literals: every iteration is a *different* SQL string -> hard parse
+DECLARE v VARCHAR2(200);
+BEGIN
+  FOR i IN 1..500 LOOP
+    EXECUTE IMMEDIATE 'SELECT pad FROM t_parse WHERE id = '||i INTO v;
+  END LOOP;
+END;
+/
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('parse count (total)','parse count (hard)') ORDER BY n.name;
+
+-- 2) binds: one SQL string reused -> soft parse after the first
+DECLARE v VARCHAR2(200);
+BEGIN
+  FOR i IN 1..500 LOOP
+    EXECUTE IMMEDIATE 'SELECT pad FROM t_parse WHERE id = :1' INTO v USING i;
+  END LOOP;
+END;
+/
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('parse count (total)','parse count (hard)') ORDER BY n.name;
+```
+
+Observed: the literal loop added ~1,000 to `parse count (hard)`; the bind loop added **5**.
+Hard parsing is CPU spent in the shared pool (§4.4); a parser-heavy workload also shows up as
+`library cache`/`row cache` waits and shared-pool churn.
+
+**B — A work area spilling to temp.** Force *manual* work-area mode with a tiny
+`sort_area_size`, then run a real sort. The AUTO histogram (§5.1) only reports
+one-pass/multi-pass once a work area exceeds the auto target, so manual mode makes the spill
+unmistakable via `sorts (disk)` and `V$SQL_WORKAREA`.
+
+```sql
+ALTER SESSION SET workarea_size_policy = MANUAL;
+ALTER SESSION SET sort_area_size = 65536;   -- 64 KB (deliberately tiny)
+
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('sorts (memory)','sorts (disk)') ORDER BY n.name;   -- baseline
+
+DROP TABLE t_sorted PURGE;
+CREATE TABLE t_sorted AS SELECT * FROM t_parse ORDER BY pad;   -- must sort ~20 MB
+
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('sorts (memory)','sorts (disk)') ORDER BY n.name;
+
+SELECT operation_type, policy, ROUND(last_tempseg_size/1024/1024,1) last_temp_mb
+FROM v$sql_workarea WHERE last_tempseg_size > 0
+ORDER BY last_tempseg_size DESC FETCH FIRST 3 ROWS ONLY;
+
+ALTER SESSION SET workarea_size_policy = AUTO;   -- reset
+```
+
+Observed: `sorts (disk)` went 0 → 1 and `V$SQL_WORKAREA` reported a ~21 MB
+`last_tempseg_size` — the sort **spilled to a TEMP segment**. Note the exact histogram column
+names (a common mistake is `optimal_count`/`onepass_count`/`multipass_count`, which do not
+exist):
+
+```sql
+SELECT optimal_executions, onepass_executions, multipasses_executions
+FROM v$sql_workarea_histogram;
+-- the currently-running operation (note: V$SQL_WORKAREA_ACTIVE, not V$SQL_WORKAREA):
+SELECT sid, operation_type, policy, number_passes,
+       ROUND(actual_mem_used/1024/1024,1) mem_mb, ROUND(tempseg_size/1024/1024,1) temp_mb
+FROM v$sql_workarea_active;
+```
+
+On a small Free instance a single sort usually stays `OPTIMAL` (the auto target lets one work
+area grow large); one-pass/multi-pass appear only when a work area is forced past the auto
+bound — give it more PGA or give it less to sort (§5.1).
+
+**C — Cold vs. warm reads (the buffer cache).** `ALTER SYSTEM FLUSH BUFFER_CACHE` (test
+instances only — §11) evicts the read blocks. Read the same table twice and watch
+`physical reads` vs `session logical reads`:
+
+```sql
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('physical reads','session logical reads') ORDER BY n.name;
+
+ALTER SYSTEM FLUSH BUFFER_CACHE;
+SELECT COUNT(*) FROM t_parse;   -- cold: blocks come off disk
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('physical reads','session logical reads') ORDER BY n.name;
+
+SELECT COUNT(*) FROM t_parse;   -- warm: no physical reads
+SELECT n.name, m.value FROM v$mystat m JOIN v$statname n ON n.statistic#=m.statistic#
+WHERE n.name IN ('physical reads','session logical reads') ORDER BY n.name;
+```
+
+Observed: after the flush, `physical reads` jumped by ~2,900 (the 100k-row table); the second
+pass added **0** physical reads and only logical reads. That gap *is* the buffer cache (§4.2).
+
+**D — Per-row vs. batched commits (`log file sync`).** Every `COMMIT` must make LGWR flush
+redo, which shows as the `log file sync` wait. Subtlety on 23ai/26ai: a **plain** `COMMIT`
+inside a PL/SQL loop is often **batched** (one sync for many commits), so make the per-row
+cost explicit with `COMMIT WRITE IMMEDIATE WAIT`:
+
+```sql
+DROP TABLE t_commit PURGE;
+CREATE TABLE t_commit (id NUMBER, v VARCHAR2(100));
+
+SELECT total_waits, ROUND(time_waited_micro/1000,1) ms
+FROM v$system_event WHERE event = 'log file sync';   -- baseline
+
+-- 200 separate, synchronous commits -> one log file sync each
+BEGIN
+  FOR i IN 1..200 LOOP
+    INSERT INTO t_commit VALUES (i, RPAD('x',100,'y'));
+    COMMIT WRITE IMMEDIATE WAIT;
+  END LOOP;
+END;
+/
+SELECT total_waits, ROUND(time_waited_micro/1000,1) ms
+FROM v$system_event WHERE event = 'log file sync';   -- +200 waits
+
+-- one batched commit -> a single log file sync for 200 rows
+BEGIN
+  FOR i IN 201..400 LOOP
+    INSERT INTO t_commit VALUES (i, RPAD('x',100,'y'));
+  END LOOP;
+  COMMIT;
+END;
+/
+SELECT total_waits, ROUND(time_waited_micro/1000,1) ms
+FROM v$system_event WHERE event = 'log file sync';   -- +1 wait
+```
+
+Observed: the 200 forced per-row commits added **200** `log file sync` waits (~0.2 s of wait
+in that run); the batched 200 rows added **1**. Same work, ~200× fewer syncs — the fix named
+in the §9 symptom table.
+
+### 8.8 Docker failure modes (and how to read them)
+
+The Free images are bounded, so most "memory" failures are really container or kernel limits.
+
+| Error / symptom | What it means | Fix |
+|---|---|---|
+| `ORA-00845: MEMORY_TARGET not supported` | AMM needs `/dev/shm` ≥ `MEMORY_TARGET`, but Docker defaults `/dev/shm` to **64 MB** | `--shm-size=1g` (≥ target), or use ASMM (`sga_target`) |
+| `ORA-27102: out of memory` | SGA request exceeds a kernel/cgroup limit | raise `--memory`/`--shm-size`; lower `sga_target` |
+| container exits, session killed | the **cgroup** OOM-killed a process | raise `--memory=`; check `docker stats` |
+| huge-page SGA won't start | too few huge pages / `memlock` too low | see §8.9; cannot create huge pages *inside* a container |
+
+Triage commands (host side):
+
+```bash
+docker stats --no-stream oradb                   # live cgroup memory/CPU
+docker inspect -f '{{.State.OOMKilled}}' oradb   # did the host OOM-kill it?
+df -h /dev/shm                                   # AMM/MGA backing store
+dmesg | tail -30                                 # 'Killed process ...' = host OOM, not Oracle
+```
+
+Key point: Oracle Database Free caps the **SGA at 2 GB**. Giving the container *more* RAM does
+not raise the in-DB cap, but giving it *less* — or leaving `/dev/shm` at 64 MB — is a very
+common way to break startup.
+
+### 8.9 HugePages (why the SGA wants them)
+
+Linux tracks RAM in 4 KB pages by default; a large SGA then needs a big page table, and the
+SGA can be swapped out. **Huge pages** (typically 2 MB) shrink that overhead and, allocated up
+front, are **not swappable** — Oracle recommends them for any serious SGA (§3.3).
+
+```bash
+grep -E 'Hugepagesize|HugePages_Total|HugePages_Free|HugePages_Rsvd' /proc/meminfo
+# this container: Hugepagesize 2048 kB, HugePages_Total 0  -> none configured
+```
+
+Sizing and enabling (host, root):
+
+```bash
+# 1) how many 2 MB pages cover the SGA (plus a small reserve)
+echo $(( 1100/2 + 8 ))          # ~558 pages for a 1.1 GB SGA
+# 2) reserve them now and persistently
+sysctl -w vm.nr_hugepages=558
+echo 'vm.nr_hugepages = 558' >> /etc/sysctl.d/99-oracle.conf
+# 3) let Oracle lock them, then restart the instance
+ulimit -l unlimited             # in Docker: --ulimit memlock=-1:-1
+```
+
+Then point the database at them and confirm from the alert log:
+
+```sql
+SHOW PARAMETER use_large_pages;   -- TRUE (use if available) / ONLY / FALSE / AUTO
+ALTER SYSTEM SET use_large_pages = ONLY SCOPE = SPFILE;   -- restart to apply
+```
+
+```
+# alert log at startup:
+Large Pages Information
+  Total Large Page size = 1152 MB
+  SGA: 1152 MB, LargePages used = 558 pages
+```
+
+Caveats: huge pages back only the **SGA**, not general `malloc`; and inside a container they
+come from the **host** kernel, so you cannot create them "in" the container. If
+`use_large_pages=ONLY` and there are too few, startup fails (`ORA-27102`), so leave headroom.
+**AMM (`memory_target`) is incompatible with huge pages** (§3.3) — use ASMM.
+
+### 8.10 Minimal shared-memory demo (SGA vs. PGA in ~30 lines of C)
+
+Part 0 claims the SGA is one shared segment and the PGA is private. Reproduce that with the
+same OS primitives Oracle uses: `shmget()/shmat()` (System V — how the SGA appears in
+`/proc/sysvipc/shm`) and the `MAP_SHARED` vs `MAP_PRIVATE` contrast (shared vs. private). Run
+on the **host** (the Oracle image ships no compiler):
+
+```c
+/* memdemo.c :  cc -O2 -o memdemo memdemo.c && ./memdemo        */
+/*              ./memdemo sysv     (also maps a System V segment) */
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <sys/wait.h>
+
+int main(int argc, char **argv) {
+  size_t n = 4096;
+  if (argc > 1 && !strcmp(argv[1], "sysv")) {        /* shmget = how the SGA is made */
+    int id = shmget(IPC_PRIVATE, n, IPC_CREAT | 0600);
+    char *p = shmat(id, NULL, 0);
+    strcpy(p, "SGA-like shared segment");
+    if (fork() == 0) { printf("  child sees: '%s'\n", p); _exit(0); }
+    wait(NULL); shmdt(p); shmctl(id, IPC_RMID, NULL);
+    return 0;
+  }
+  char *sh = mmap(NULL, n, PROT_READ|PROT_WRITE,
+                  MAP_ANONYMOUS|MAP_SHARED,  -1, 0);   /* one copy, shared */
+  char *pr = mmap(NULL, n, PROT_READ|PROT_WRITE,
+                  MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);   /* private copies   */
+  strcpy(sh, "shared"); strcpy(pr, "private");
+  if (fork() == 0) { sh[0]='S'; sh[1]='H'; pr[0]='P'; pr[1]='R'; _exit(0); }
+  wait(NULL);
+  printf("MAP_SHARED  parent sees '%s'  (child's write survived)\n", sh);
+  printf("MAP_PRIVATE parent sees '%s'  (parent's copy unchanged)\n", pr);
+  return 0;
+}
+```
+
+```bash
+cc -O2 -o memdemo memdemo.c && ./memdemo
+# MAP_SHARED  parent sees 'SHared'   (child's write survived)
+# MAP_PRIVATE parent sees 'private'  (parent's copy unchanged)
+./memdemo sysv
+# child sees: 'SGA-like shared segment'
+```
+
+`MAP_SHARED` is the SGA (one physical copy, all processes see writes); `MAP_PRIVATE` is the
+PGA (copy-on-write, private). The `sysv` mode is literally how the SGA shows up in
+`/proc/sysvipc/shm` (§8.6). Under AMM/MGA Oracle uses `mmap(MAP_SHARED)` **files** under
+`/dev/shm` instead — same idea, different interface.
 
 ---
 
@@ -1683,6 +2178,109 @@ and [4.10](#410-other-optional-sga-subareas).
   and `PDBADMIN` passwords.
 - **Least privilege for monitoring:** give a dedicated user `SELECT` on the needed `V$`
   views instead of `SYSDBA` for routine memory inspection.
+
+---
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **Instance** | The running Oracle software: background processes + SGA (+PGA). Wears out on shutdown. |
+| **Database** | The on-disk files (data, control, redo, undo). Persists across instance lifetimes. |
+| **Session** | A logical connection on top of a process. Owns a cursor/state area (UGA). |
+| **CDB / PDB** | Multitenant container database / pluggable database. 23ai Free is a CDB with `FREEPDB1`. |
+| **SGA** | System Global Area — shared by every server/background process of the instance. |
+| **PGA** | Program Global Area — private, non-shared memory of one server process. |
+| **UGA** | User Global Area — session state; lives in the SGA under shared server, else in the PGA. |
+| **MGA** | Managed Global Area (26ai) — semi-shared, dynamically-attached region (namespaces). |
+| **DGA** | Direct Global Area — the part of the PGA used for direct I/O / parallel-query buffers. |
+| **Granule** | The allocation/deallocation unit for dynamic SGA components (`V$SGA_DYNAMIC_COMPONENTS.GRANULE_SIZE`). |
+| **ASMM** | Automatic Shared Memory Management — `SGA_TARGET` sizes the SGA; PGA via `PGA_AGGREGATE_TARGET`. |
+| **AMM** | Automatic Memory Management — `MEMORY_TARGET` moves memory between SGA and PGA. Needs `/dev/shm`. |
+| **Unified Memory** | 26ai `MEMORY_SIZE` — one knob for SGA + PGA + MGA + UGA. |
+| **Buffer cache** | SGA cache of data blocks (`db_cache_size`); the read path. |
+| **Shared pool** | SGA area holding the library cache, dictionary cache, result cache, reserved pool. |
+| **Library cache** | Parsed SQL/PLSQL and their execution plans (shared SQL areas). |
+| **Data dictionary cache** | Cached rows from the data dictionary to avoid recursive queries. |
+| **Large pool** | Backs shared server, parallel query, RMAN I/O buffers, `DBMS_LOB` sessions. |
+| **Redo log buffer** | SGA buffer for redo records; flushed by LGWR on commit/3 s/full. |
+| **Fixed SGA** | Internal bookkeeping created at startup; grows with `processes`/`sessions`. |
+| **In-Memory area** | Column store (`inmemory_size`) for scan-heavy analytics. |
+| **Vector pool** | 23ai+ area (`vector_memory_size`) for vector indexes / AI workloads. |
+| **Work area** | PGA memory for a sort, hash join, or bitmap merge. |
+| **Optimal / one-pass / multi-pass** | Work area fits in memory / spills once to TEMP / spills repeatedly. |
+| **Hard / soft parse** | New SQL text compiled from scratch / an existing plan reused. Bind variables make parses soft. |
+| **LGWR / DBWn / CKPT** | Background processes that write redo, write dirty blocks, and signal checkpoints. |
+| **Huge pages** | Larger (usually 2 MB) OS pages that back the SGA without a huge page table or swapping. |
+| **`shmget` / `shmat` / `mmap`** | OS calls to create/attach a shared segment; how the SGA (and AMM files) are mapped. |
+| **Namespace** | A named region inside the MGA shared between a chosen set of processes. |
+
+---
+
+## Practice questions (with answers)
+
+<details><summary><b>Part 0 &amp; Step 0</b></summary>
+
+1. **Why does a cache exist, and what does a miss cost?** RAM is ~10^4× faster than disk and
+   the working set is usually small, so keeping hot data in RAM avoids most disk trips. A miss
+   pays disk latency (plus, for a dirty block, a later write-back).
+2. **Virtual vs. physical address?** Programs use virtual addresses; the **MMU** translates them
+   to physical addresses via the page table (TLB-cached). The OS gives each process its own
+   virtual space.
+3. **Two problems memory solves for a database.** Avoid re-reading/re-computing hot data (buffer
+   cache, caches) and decouple fast producers from slow writers (redo log buffer, dirty blocks).
+
+</details>
+
+<details><summary><b>Step 1–2</b></summary>
+
+4. **Instance vs. database vs. session?** The *database* is the files on disk; the *instance* is
+   the processes + memory that run against them; a *session* is one connection with private state.
+5. **Shared vs. private?** SGA = shared by all processes; PGA = private per server process; UGA
+   = private to a session (in the PGA unless shared server is used).
+
+</details>
+
+<details><summary><b>Step 3–4</b></summary>
+
+6. **You set `sga_target=1100M` inside `FREEPDB1` — does the instance SGA shrink?** No. In a PDB
+   that parameter is a *per-PDB cap*; the instance total is set in `CDB$ROOT` (§3.8–3.9).
+7. **AMM fails with ORA-00845?** `MEMORY_TARGET` needs `/dev/shm` ≥ the target; Docker defaults
+   `/dev/shm` to 64 MB. Raise `--shm-size` or switch to ASMM (`sga_target`).
+8. **What does one `UPDATE … COMMIT` touch?** Buffer cache (find/modify the block), redo log
+   buffer (the change vector), undo (in the buffer cache), then LGWR on commit; DBWn writes the
+   dirty block later.
+9. **Why is cache-hit ratio a bad target?** It *rises* when you do less work (e.g. a full scan
+   touches each block once), so chasing it can hide bad plans. Tune the waits/statements instead.
+
+</details>
+
+<details><summary><b>Step 5–6</b></summary>
+
+10. **Optimal vs. one-pass vs. multi-pass?** The work area holds the whole input (optimal),
+    spills to TEMP once (one-pass), or re-reads TEMP repeatedly (multi-pass) — each step is
+    slower and pollutes TEMP.
+11. **Where does the MGA live on Free, and why is it in PGA figures?** On tmpfs files under
+    `/dev/shm` (26ai), yet its allocation is **accounted under PGA** — so `maximum PGA allocated`
+    can exceed what `/dev/shm` stores (§6.3).
+12. **How does MGA membership differ from the SGA?** The SGA is attached by every process for the
+    instance's life; MGA namespaces are attached **dynamically** by only the processes that opt in.
+
+</details>
+
+<details><summary><b>Step 7–8</b></summary>
+
+13. **The four-step manipulation loop?** (1) Inspect the current value/usage, (2) decide
+    static vs dynamic, (3) change it (`ALTER SYSTEM`/`SESSION` with the right `SCOPE`), (4) verify
+    the effect and watch the waits.
+14. **After `FLUSH BUFFER_CACHE`, why does the second read add 0 physical reads?** The first read
+    repopulated the buffer cache, so the second pass serves every block from RAM (only logical
+    reads grow) — §8.7C.
+15. **Why did a plain per-row `COMMIT` loop show only one `log file sync` on 26ai?** 23ai/26ai
+    **batches** plain commits issued in a tight PL/SQL loop into one redo sync; force each one
+    with `COMMIT WRITE IMMEDIATE WAIT` to see 200 waits — §8.7D.
+
+</details>
 
 ---
 
